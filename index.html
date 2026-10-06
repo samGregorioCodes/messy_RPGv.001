@@ -114,6 +114,10 @@
   ul.plain li { display: flex; justify-content: space-between; padding: 2px 0; }
   .qty { color: var(--dim); }
 
+  /* Scene art */
+  .scene { margin: 0 0 12px; }
+  .scene img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; }
+
   /* Battle header */
   .versus { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 0.9rem; color: var(--dim); margin-bottom: 4px; }
   .versus b { color: var(--text); }
@@ -186,7 +190,8 @@ const WORLD = {
     text: "A handful of cottages sit beside a slow brown river. An innkeeper waves you over. A bed costs 5 gold.",
     exits: { North: "crossroads" },
     enemies: [],
-    inn: true
+    inn: true,
+    image: "images/cozyriverside.png"
   },
   chapel: {
     name: "The Ruined Chapel",
@@ -207,6 +212,8 @@ function newPlayer() {
     cls: "Fighter",
     hp: 40, maxHp: 40,
     gold: 25, exp: 0,
+    totalExp: 0,      // running total earned (never goes down), for star levels later
+    weaponLevel: 0,   // upgraded at the Blacksmith
     attrs: { Might: 14, Agility: 12, Body: 15, Luck: 10 },
     skills: ["Slash", "Brace", "Quick Step"],
     items: [
@@ -293,7 +300,7 @@ function searchArea() {
     return;
   }
   if (r === 4 || r === 5) {
-    const found = between(2, 9);
+    const found = between(2, 9) + Math.max(0, Math.floor((player.attrs.Luck - 10) / 2));
     player.gold += found;
     addLog("You search carefully and find " + found + " gold.", "good");
   } else {
@@ -307,6 +314,49 @@ function restAtInn() {
   player.gold -= 5;
   player.hp = player.maxHp;
   addLog("You sleep soundly. Health fully restored.", "good");
+  render();
+}
+
+/* ---------------- village: blacksmith + training hall ---------------- */
+
+const MAX_WEAPON_LEVEL = 5;
+function weaponCost() { return 25 * (player.weaponLevel + 1); }
+
+function upgradeWeapon() {
+  if (player.weaponLevel >= MAX_WEAPON_LEVEL) {
+    addLog("Your weapon can't be improved any further.", "note");
+    render();
+    return;
+  }
+  const cost = weaponCost();
+  if (player.gold < cost) {
+    addLog("The blacksmith wants " + cost + " gold for that.", "bad");
+    render();
+    return;
+  }
+  player.gold -= cost;
+  player.weaponLevel += 1;
+  addLog("The blacksmith reworks your blade. Weapon is now +" + player.weaponLevel + ".", "good");
+  render();
+}
+
+const TRAINABLE = ["Might", "Agility", "Body", "Luck"];
+function trainCost(attr) { return 4 * player.attrs[attr]; }
+
+function trainAttribute(attr) {
+  const cost = trainCost(attr);
+  if (player.exp < cost) {
+    addLog("You need " + cost + " exp to train " + attr + ".", "bad");
+    render();
+    return;
+  }
+  player.exp -= cost;          // spent exp goes away; totalExp keeps the running total
+  player.attrs[attr] += 1;
+  if (attr === "Body") {       // Body adds max health
+    player.maxHp += 3;
+    player.hp += 3;
+  }
+  addLog(attr + " increased to " + player.attrs[attr] + ".", "good");
   render();
 }
 
@@ -348,6 +398,7 @@ function checkEnd() {
     const g = between(enemy.gold[0], enemy.gold[1]);
     player.gold += g;
     player.exp += enemy.exp;
+    player.totalExp += enemy.exp;
     addLog("You defeated the " + enemy.name + "! +" + g + " gold, +" + enemy.exp + " exp.", "good");
     enemy = null;
     state = State.EXPLORING;
@@ -371,7 +422,7 @@ function playRound(stanceName) {
   lastRoll = roll(20);
 
   if (lastRoll >= stance.need) {
-    const base = roll(6) + Math.floor(player.attrs.Might / 3);
+    const base = roll(6) + Math.floor(player.attrs.Might / 3) + player.weaponLevel;
     const dmg = Math.max(1, Math.round(base * stance.dmgMult));
     enemy.hp -= dmg;
     addLog("Round " + round + " (" + stanceName + "): rolled " + lastRoll + ", you hit for " + dmg + ".", "good");
@@ -426,6 +477,8 @@ function loadGame() {
     if (!raw) { addLog("No saved game found.", "bad"); render(); return; }
     const data = JSON.parse(raw);
     player = data.player;
+    player.weaponLevel = player.weaponLevel || 0;                // older saves lack these
+    player.totalExp = player.totalExp || player.exp || 0;
     here = data.here;
     enemy = null;
     state = State.EXPLORING;
@@ -463,6 +516,8 @@ function renderStats() {
   }
   grid.append(el("span", "k", "Gold"), el("span", "v", String(player.gold)));
   grid.append(el("span", "k", "Exp"), el("span", "v", String(player.exp)));
+  grid.append(el("span", "k", "Earned"), el("span", "v", String(player.totalExp)));
+  grid.append(el("span", "k", "Weapon"), el("span", "v", "+" + player.weaponLevel));
   box.append(grid);
 
   box.append(el("h3", null, "Skills"));
@@ -475,7 +530,8 @@ function renderStats() {
   for (const it of player.items) {
     if (it.qty <= 0) continue;
     const li = el("li");
-    li.append(el("span", null, it.name), el("span", "qty", "×" + it.qty));
+    const label = (it.name === "Rusty Sword" && player.weaponLevel > 0) ? it.name + " +" + player.weaponLevel : it.name;
+    li.append(el("span", null, label), el("span", "qty", "×" + it.qty));
     inv.append(li);
   }
   box.append(inv);
@@ -489,6 +545,15 @@ function renderMain() {
   if (state === State.EXPLORING) {
     const place = WORLD[here];
     box.append(el("h2", null, place.name));
+    if (place.image) {
+      const fig = el("figure", "scene");
+      const img = document.createElement("img");
+      img.src = place.image;
+      img.alt = place.name;
+      img.onerror = () => fig.remove();   // hide the picture if the file is missing
+      fig.append(img);
+      box.append(fig);
+    }
     box.append(el("p", null, place.text));
 
     box.append(el("h3", null, "Where to?"));
@@ -504,6 +569,29 @@ function renderMain() {
     if (place.inn) acts.append(btn("Rest at the inn (5 gold)", restAtInn));
     acts.append(btn("Drink Healing Draught (" + itemCount("Healing Draught") + ")", () => { if (drinkDraught()) render(); }));
     box.append(acts);
+
+    if (place.inn) {
+      box.append(el("h3", null, "Blacksmith"));
+      const smith = el("div", "actions");
+      if (player.weaponLevel >= MAX_WEAPON_LEVEL) {
+        smith.append(btn("Weapon fully upgraded (+" + MAX_WEAPON_LEVEL + ")", () => {}, "", true));
+      } else {
+        smith.append(btn("Upgrade weapon to +" + (player.weaponLevel + 1) + " (" + weaponCost() + " gold)",
+          upgradeWeapon, "", player.gold < weaponCost()));
+      }
+      box.append(smith);
+      box.append(el("div", "hint", "Each level adds +1 damage."));
+
+      box.append(el("h3", null, "Training Hall"));
+      const train = el("div", "actions");
+      for (const attr of TRAINABLE) {
+        const next = player.attrs[attr] + 1;
+        train.append(btn(attr + " " + player.attrs[attr] + " → " + next + " (" + trainCost(attr) + " exp)",
+          () => trainAttribute(attr), "", player.exp < trainCost(attr)));
+      }
+      box.append(train);
+      box.append(el("div", "hint", "Might: damage. Agility: fleeing. Body: +3 max health. Luck: a little more gold from searching."));
+    }
 
     renderLog(box, 6);
 
