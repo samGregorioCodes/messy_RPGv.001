@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Text RPG Prototype</title>
+<style>
+  :root {
+    --bg: #14110d;
+    --panel: #211c15;
+    --panel2: #2b251c;
+    --line: #4a3f2e;
+    --text: #e8dfcc;
+    --dim: #a39880;
+    --amber: #d9a441;
+    --red: #c4513f;
+    --green: #5fa774;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: Georgia, "Times New Roman", serif;
+    line-height: 1.5;
+  }
+  header {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 1.2rem; color: var(--amber); letter-spacing: 0.05em; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* Two-panel layout: dynamic panel on the left, stable panel on the right */
+  .layout {
+    display: grid;
+    grid-template-columns: 1.7fr 1fr;
+    gap: 16px;
+    padding: 16px;
+    max-width: 1000px;
+    margin: 0 auto;
+  }
+  @media (max-width: 760px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  h2 { margin: 0 0 4px; font-size: 1.25rem; color: var(--amber); }
+  h3 {
+    margin: 16px 0 6px;
+    font-size: 0.8rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--dim);
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 4px;
+  }
+  .sub { color: var(--dim); font-size: 0.9rem; }
+
+  /* Buttons */
+  .btn {
+    font: inherit;
+    font-size: 0.95rem;
+    color: var(--text);
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 14px;
+    cursor: pointer;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--amber); color: var(--amber); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.danger:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+  .btn.small { padding: 4px 10px; font-size: 0.8rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+
+  /* Log */
+  .log {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-top: 12px;
+    min-height: 110px;
+    font-size: 0.92rem;
+  }
+  .log p { margin: 2px 0; }
+  .log .good { color: var(--green); }
+  .log .bad { color: var(--red); }
+  .log .note { color: var(--dim); }
+
+  /* Bars */
+  .bar-row { margin: 8px 0; font-size: 0.85rem; }
+  .bar-label { display: flex; justify-content: space-between; color: var(--dim); }
+  .track { height: 10px; background: #0d0b08; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+  .fill { height: 100%; transition: width 0.25s; }
+  .fill.green { background: var(--green); }
+  .fill.red { background: var(--red); }
+
+  /* Stats panel */
+  .attrs { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 2px 10px; font-size: 0.92rem; }
+  .attrs .k { color: var(--dim); }
+  .attrs .v { text-align: right; }
+  ul.plain { list-style: none; margin: 0; padding: 0; font-size: 0.92rem; }
+  ul.plain li { display: flex; justify-content: space-between; padding: 2px 0; }
+  .qty { color: var(--dim); }
+
+  /* Battle header */
+  .versus { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 0.9rem; color: var(--dim); margin-bottom: 4px; }
+  .versus b { color: var(--text); }
+  .battle-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 480px) { .battle-bars { grid-template-columns: 1fr; } }
+  .hint { color: var(--dim); font-size: 0.82rem; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>TEXT RPG PROTOTYPE</h1>
+  <div class="toolbar" id="toolbar"></div>
+</header>
+
+<main class="layout">
+  <!-- LEFT: dynamic panel. Re-drawn every time the game state changes. -->
+  <section class="panel" id="main"></section>
+
+  <!-- RIGHT: stable panel. Always shows the character. -->
+  <aside class="panel" id="stats"></aside>
+</main>
+
+<script>
+/* ============================================================
+   GAME DATA
+   ============================================================ */
+
+// Like an enum in C++:  enum GameState {EXPLORING, IN_BATTLE, GAME_OVER};
+const State = { EXPLORING: "exploring", IN_BATTLE: "battle", GAME_OVER: "over" };
+
+// Each stance changes the number you need to roll (d20), the damage you
+// deal, and how much damage you take.
+const STANCES = {
+  Normal:     { need: 6, dmgMult: 1.0, takenMult: 1.0, hint: "Balanced. Need 6+ to hit." },
+  Aggressive: { need: 9, dmgMult: 1.6, takenMult: 1.0, hint: "Harder to hit (9+), but hits harder." },
+  Defensive:  { need: 4, dmgMult: 0.6, takenMult: 0.5, hint: "Easy to hit (4+), weak hits, take half damage." }
+};
+
+const ENEMIES = {
+  wolf:   { name: "Gray Wolf",      hp: 22, atk: 6,  gold: [3, 8],   exp: 12 },
+  bandit: { name: "Road Bandit",    hp: 28, atk: 8,  gold: [8, 18],  exp: 18 },
+  bat:    { name: "Cave Bat Swarm", hp: 18, atk: 5,  gold: [1, 4],   exp: 9  },
+  golem:  { name: "Stone Golem",    hp: 45, atk: 11, gold: [15, 30], exp: 40 },
+  ghoul:  { name: "Chapel Ghoul",   hp: 34, atk: 9,  gold: [10, 22], exp: 28 }
+};
+
+// Each place lists its exits (direction -> place) and which enemies can show up.
+const WORLD = {
+  crossroads: {
+    name: "The Crossroads",
+    text: "Four worn paths meet beneath a leaning signpost. The wind carries woodsmoke from the south and something colder from the east.",
+    exits: { North: "wood", East: "mine", South: "village", West: "chapel" },
+    enemies: []
+  },
+  wood: {
+    name: "Whispering Wood",
+    text: "Tall pines crowd the path. Something rustles just out of sight, and a distant howl echoes between the trunks.",
+    exits: { South: "crossroads" },
+    enemies: ["wolf", "bandit"]
+  },
+  mine: {
+    name: "The Old Mine",
+    text: "Rotted beams hold up a tunnel that smells of damp stone. Pebbles click somewhere deeper in the dark.",
+    exits: { West: "crossroads" },
+    enemies: ["bat", "golem"]
+  },
+  village: {
+    name: "Riverside Village",
+    text: "A handful of cottages sit beside a slow brown river. An innkeeper waves you over. A bed costs 5 gold.",
+    exits: { North: "crossroads" },
+    enemies: [],
+    inn: true
+  },
+  chapel: {
+    name: "The Ruined Chapel",
+    text: "Half the roof has fallen in. Cold light falls on a cracked altar, and the air feels watched.",
+    exits: { East: "crossroads" },
+    enemies: ["ghoul"]
+  }
+};
+
+/* ============================================================
+   GAME STATE (the "variables" of the program)
+   ============================================================ */
+
+function newPlayer() {
+  return {
+    name: "Wanderer",
+    race: "Human",
+    cls: "Fighter",
+    hp: 40, maxHp: 40,
+    gold: 25, exp: 0,
+    attrs: { Might: 14, Agility: 12, Body: 15, Luck: 10 },
+    skills: ["Slash", "Brace", "Quick Step"],
+    items: [
+      { name: "Rusty Sword", qty: 1 },
+      { name: "Healing Draught", qty: 2 }
+    ]
+  };
+}
+
+let player = newPlayer();
+let state = State.EXPLORING;
+let here = "crossroads";
+let enemy = null;      // set when a fight starts
+let round = 1;
+let lastRoll = null;   // shown in the battle header
+let lastNeed = 6;
+let log = [];
+
+/* ============================================================
+   SMALL HELPERS
+   ============================================================ */
+
+function roll(sides) { return 1 + Math.floor(Math.random() * sides); }
+function between(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+function addLog(text, cls) { log.push({ text, cls: cls || "" }); if (log.length > 40) log.shift(); }
+
+function itemCount(name) {
+  const it = player.items.find(i => i.name === name);
+  return it ? it.qty : 0;
+}
+function useItem(name) {
+  const it = player.items.find(i => i.name === name);
+  if (it && it.qty > 0) { it.qty -= 1; return true; }
+  return false;
+}
+
+// DOM helpers (textContent only, so nothing is ever treated as HTML)
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+function btn(label, onClick, cls, disabled) {
+  const b = el("button", "btn " + (cls || ""), label);
+  b.onclick = onClick;
+  if (disabled) b.disabled = true;
+  return b;
+}
+function bar(label, cur, max, color) {
+  const row = el("div", "bar-row");
+  const top = el("div", "bar-label");
+  top.append(el("span", null, label), el("span", null, Math.max(0, cur) + " / " + max));
+  const track = el("div", "track");
+  const fill = el("div", "fill " + color);
+  fill.style.width = Math.max(0, Math.min(100, (cur / max) * 100)) + "%";
+  track.append(fill);
+  row.append(top, track);
+  return row;
+}
+function renderLog(box, count) {
+  const wrap = el("div", "log");
+  const recent = log.slice(-count);
+  if (recent.length === 0) wrap.append(el("p", "note", "Nothing has happened yet."));
+  for (const entry of recent) wrap.append(el("p", entry.cls, entry.text));
+  box.append(wrap);
+}
+
+/* ============================================================
+   ACTIONS
+   ============================================================ */
+
+function go(destination) {
+  here = destination;
+  addLog("You travel to " + WORLD[destination].name + ".", "note");
+  render();
+}
+
+function searchArea() {
+  const place = WORLD[here];
+  const r = roll(6);
+  if (place.enemies.length > 0 && r <= 3) {
+    startFight(place.enemies[between(0, place.enemies.length - 1)]);
+    return;
+  }
+  if (r === 4 || r === 5) {
+    const found = between(2, 9);
+    player.gold += found;
+    addLog("You search carefully and find " + found + " gold.", "good");
+  } else {
+    addLog("You search the area but find nothing of use.", "note");
+  }
+  render();
+}
+
+function restAtInn() {
+  if (player.gold < 5) { addLog("You can't afford a bed (5 gold).", "bad"); render(); return; }
+  player.gold -= 5;
+  player.hp = player.maxHp;
+  addLog("You sleep soundly. Health fully restored.", "good");
+  render();
+}
+
+function drinkDraught() {
+  if (player.hp >= player.maxHp) { addLog("You're already at full health.", "note"); render(); return false; }
+  if (!useItem("Healing Draught")) { addLog("You have no Healing Draughts.", "bad"); render(); return false; }
+  const healed = Math.min(15, player.maxHp - player.hp);
+  player.hp += healed;
+  addLog("You drink a Healing Draught and recover " + healed + " health.", "good");
+  return true;
+}
+
+/* ---------------- combat ---------------- */
+
+function startFight(key) {
+  const t = ENEMIES[key];
+  enemy = { name: t.name, hp: t.hp, maxHp: t.hp, atk: t.atk, gold: t.gold, exp: t.exp };
+  state = State.IN_BATTLE;
+  round = 1;
+  lastRoll = null;
+  lastNeed = STANCES.Normal.need;
+  addLog("A " + enemy.name + " appears!", "bad");
+  render();
+}
+
+function enemyAttack(stance) {
+  const hitRoll = roll(20);
+  if (hitRoll >= 8) {
+    const dmg = Math.max(1, Math.ceil(between(1, enemy.atk) * stance.takenMult));
+    player.hp -= dmg;
+    addLog("The " + enemy.name + " strikes you for " + dmg + ".", "bad");
+  } else {
+    addLog("The " + enemy.name + " misses you.", "note");
+  }
+}
+
+function checkEnd() {
+  if (enemy && enemy.hp <= 0) {
+    const g = between(enemy.gold[0], enemy.gold[1]);
+    player.gold += g;
+    player.exp += enemy.exp;
+    addLog("You defeated the " + enemy.name + "! +" + g + " gold, +" + enemy.exp + " exp.", "good");
+    enemy = null;
+    state = State.EXPLORING;
+    return true;
+  }
+  if (player.hp <= 0) {
+    player.hp = 0;
+    addLog("You collapse. The adventure ends here.", "bad");
+    state = State.GAME_OVER;
+    return true;
+  }
+  return false;
+}
+
+// One button click = one pass through the fight "loop".
+// In a C++ console version this would be:
+//   while (playerHealth > 0 && enemyHealth > 0) { ...choose stance, roll, damage... }
+function playRound(stanceName) {
+  const stance = STANCES[stanceName];
+  lastNeed = stance.need;
+  lastRoll = roll(20);
+
+  if (lastRoll >= stance.need) {
+    const base = roll(6) + Math.floor(player.attrs.Might / 3);
+    const dmg = Math.max(1, Math.round(base * stance.dmgMult));
+    enemy.hp -= dmg;
+    addLog("Round " + round + " (" + stanceName + "): rolled " + lastRoll + ", you hit for " + dmg + ".", "good");
+  } else {
+    addLog("Round " + round + " (" + stanceName + "): rolled " + lastRoll + ", you miss.", "note");
+  }
+
+  if (!checkEnd()) {
+    enemyAttack(stance);
+    if (!checkEnd()) round += 1;
+  }
+  render();
+}
+
+function flee() {
+  // Same idea as `break` leaving a loop, but it can fail.
+  const attempt = roll(20) + Math.floor(player.attrs.Agility / 3);
+  if (attempt >= 12) {
+    addLog("You slip away from the " + enemy.name + ".", "note");
+    enemy = null;
+    state = State.EXPLORING;
+  } else {
+    addLog("You fail to escape!", "bad");
+    enemyAttack(STANCES.Normal);
+    checkEnd();
+  }
+  render();
+}
+
+function battleDraught() {
+  if (drinkDraught()) {
+    enemyAttack(STANCES.Normal);   // using an item costs your turn
+    if (!checkEnd()) round += 1;
+    render();
+  }
+}
+
+/* ---------------- save / load ---------------- */
+
+function saveGame() {
+  try {
+    localStorage.setItem("rpgPrototypeSave", JSON.stringify({ player, here }));
+    addLog("Game saved.", "note");
+  } catch (e) {
+    addLog("Saving isn't available in this browser.", "bad");
+  }
+  render();
+}
+function loadGame() {
+  try {
+    const raw = localStorage.getItem("rpgPrototypeSave");
+    if (!raw) { addLog("No saved game found.", "bad"); render(); return; }
+    const data = JSON.parse(raw);
+    player = data.player;
+    here = data.here;
+    enemy = null;
+    state = State.EXPLORING;
+    addLog("Game loaded.", "note");
+  } catch (e) {
+    addLog("Couldn't load the saved game.", "bad");
+  }
+  render();
+}
+function newGame() {
+  player = newPlayer();
+  here = "crossroads";
+  enemy = null;
+  state = State.EXPLORING;
+  log = [];
+  render();
+}
+
+/* ============================================================
+   RENDERING
+   ============================================================ */
+
+// RIGHT PANEL: always the same layout, always shows current numbers.
+function renderStats() {
+  const box = document.getElementById("stats");
+  box.replaceChildren();
+  box.append(el("h2", null, player.name));
+  box.append(el("div", "sub", player.race + " · " + player.cls));
+  box.append(bar("Health", player.hp, player.maxHp, "green"));
+
+  box.append(el("h3", null, "Attributes"));
+  const grid = el("div", "attrs");
+  for (const [k, v] of Object.entries(player.attrs)) {
+    grid.append(el("span", "k", k), el("span", "v", String(v)));
+  }
+  grid.append(el("span", "k", "Gold"), el("span", "v", String(player.gold)));
+  grid.append(el("span", "k", "Exp"), el("span", "v", String(player.exp)));
+  box.append(grid);
+
+  box.append(el("h3", null, "Skills"));
+  const skills = el("ul", "plain");
+  for (const s of player.skills) skills.append(el("li", null, s));
+  box.append(skills);
+
+  box.append(el("h3", null, "Inventory"));
+  const inv = el("ul", "plain");
+  for (const it of player.items) {
+    if (it.qty <= 0) continue;
+    const li = el("li");
+    li.append(el("span", null, it.name), el("span", "qty", "×" + it.qty));
+    inv.append(li);
+  }
+  box.append(inv);
+}
+
+// LEFT PANEL: picks a screen based on the current game state.
+function renderMain() {
+  const box = document.getElementById("main");
+  box.replaceChildren();
+
+  if (state === State.EXPLORING) {
+    const place = WORLD[here];
+    box.append(el("h2", null, place.name));
+    box.append(el("p", null, place.text));
+
+    box.append(el("h3", null, "Where to?"));
+    const moves = el("div", "actions");
+    for (const [dir, dest] of Object.entries(place.exits)) {
+      moves.append(btn("Head " + dir + " → " + WORLD[dest].name, () => go(dest)));
+    }
+    box.append(moves);
+
+    box.append(el("h3", null, "Actions"));
+    const acts = el("div", "actions");
+    acts.append(btn("Search the area", searchArea));
+    if (place.inn) acts.append(btn("Rest at the inn (5 gold)", restAtInn));
+    acts.append(btn("Drink Healing Draught (" + itemCount("Healing Draught") + ")", () => { if (drinkDraught()) render(); }));
+    box.append(acts);
+
+    renderLog(box, 6);
+
+  } else if (state === State.IN_BATTLE) {
+    const head = el("div", "versus");
+    head.append(el("span", null, "You vs "), el("b", null, enemy.name));
+    head.append(el("span", null, "Round " + round));
+    head.append(el("span", null, "Need " + lastNeed + "+" + (lastRoll !== null ? "  ·  Last roll " + lastRoll : "")));
+    box.append(head);
+
+    const bars = el("div", "battle-bars");
+    bars.append(bar("You", player.hp, player.maxHp, "green"));
+    bars.append(bar(enemy.name, enemy.hp, enemy.maxHp, "red"));
+    box.append(bars);
+
+    box.append(el("h3", null, "Choose your stance"));
+    const acts = el("div", "actions");
+    for (const name of Object.keys(STANCES)) {
+      acts.append(btn(name, () => playRound(name)));
+    }
+    box.append(acts);
+    const hint = el("div", "hint", "Normal: " + STANCES.Normal.hint + " Aggressive: " + STANCES.Aggressive.hint + " Defensive: " + STANCES.Defensive.hint);
+    box.append(hint);
+
+    const other = el("div", "actions");
+    other.append(btn("Drink Healing Draught (" + itemCount("Healing Draught") + ")", battleDraught));
+    other.append(btn("Flee", flee, "danger"));
+    box.append(other);
+
+    renderLog(box, 8);
+
+  } else {
+    box.append(el("h2", null, "Game Over"));
+    box.append(el("p", null, "You fell in " + WORLD[here].name + " with " + player.gold + " gold and " + player.exp + " exp."));
+    box.append(btn("Start again", newGame));
+    renderLog(box, 6);
+  }
+}
+
+function renderToolbar() {
+  const bar = document.getElementById("toolbar");
+  bar.replaceChildren(
+    btn("Save", saveGame, "small"),
+    btn("Load", loadGame, "small"),
+    btn("New game", newGame, "small danger")
+  );
+}
+
+function render() {
+  renderStats();
+  renderMain();
+}
+
+renderToolbar();
+render();
+</script>
+</body>
+</html>
